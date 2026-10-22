@@ -26,15 +26,56 @@
 
   /* ---------- location ---------- */
   function mapsLink(f) { return "https://www.google.com/maps?q=" + f.lat.toFixed(6) + "," + f.lng.toFixed(6); }
+  function setFix(p) {
+    lastFix = { lat: p.coords.latitude, lng: p.coords.longitude, acc: Math.round(p.coords.accuracy || 0), t: Date.now() };
+    return lastFix;
+  }
   function getFix(cb) {
     if (!navigator.geolocation) { cb(lastFix); return; }
     navigator.geolocation.getCurrentPosition(
-      function (p) {
-        lastFix = { lat: p.coords.latitude, lng: p.coords.longitude, acc: Math.round(p.coords.accuracy || 0), t: Date.now() };
-        cb(lastFix);
-      },
+      function (p) { cb(setFix(p)); },
       function () { cb(lastFix); },
       { enableHighAccuracy: true, timeout: 6000, maximumAge: 10000 }
+    );
+  }
+  /* SOS ke liye pakki koshish: pehle GPS (high accuracy), fail ho to network location */
+  function getFixFresh(cb) {
+    if (!navigator.geolocation) { cb(null); return; }
+    navigator.geolocation.getCurrentPosition(
+      function (p) { cb(setFix(p)); },
+      function () {
+        navigator.geolocation.getCurrentPosition(
+          function (p) { cb(setFix(p)); },
+          function () { cb(lastFix); },
+          { enableHighAccuracy: false, timeout: 6000, maximumAge: 60000 }
+        );
+      },
+      { enableHighAccuracy: true, timeout: 9000, maximumAge: 0 }
+    );
+  }
+  function startWatch() {
+    if (!navigator.geolocation || watchId !== null) return;
+    watchId = navigator.geolocation.watchPosition(
+      function (p) {
+        setFix(p);
+        var el = $("gpsStatus");
+        el.textContent = "📍 Location ready ✓ (±" + (lastFix.acc || "?") + " m)";
+        el.classList.add("ok");
+        $("liveLoc").textContent = "Lat " + lastFix.lat.toFixed(5) + ", Lng " + lastFix.lng.toFixed(5) + " (±" + lastFix.acc + " m)";
+        $("liveMap").href = mapsLink(lastFix);
+        try {
+          var d = JSON.parse(sessionStorage.getItem(SOSFLAG) || "null");
+          if (d && d.noLoc && !$("sosView").classList.contains("hidden")) {
+            var ub = $("updateBtn");
+            ub.classList.add("pulse");
+            ub.textContent = "📍 Location mil gayi — ab sabko bhejo";
+          }
+        } catch (e) {}
+      },
+      function () {
+        if (!$("sosView").classList.contains("hidden")) $("liveLoc").textContent = "Location update nahi ho rahi — GPS चालू रखो";
+      },
+      { enableHighAccuracy: true, maximumAge: 5000 }
     );
   }
   function warmGps() {
@@ -55,7 +96,10 @@
   }
   function updateText(f) { return "Meri nayi location: " + mapsLink(f) + " - " + profile.name; }
   function safeText() { return "Main safe hoon, chinta mat karo. - " + profile.name; }
-  function testText() { return "Test message: main " + profile.name + ", aap mere Suraksha emergency contact ho. Ye sirf test hai."; }
+  function testText(f) {
+    return "Test message: main " + profile.name + ", aap mere Suraksha emergency contact ho. Ye sirf test hai." +
+      (f ? " Meri location: " + mapsLink(f) : "");
+  }
 
   /* ---------- setup ---------- */
   function addRow(name, phone) {
@@ -111,14 +155,20 @@
     $("contactList").innerHTML = html;
     show("homeView");
     warmGps();
+    startWatch();
   }
 
   /* ---------- SOS ---------- */
   function startSos() {
     if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
-    getFix(function (f) {
+    var btn = $("sosBtn"), lbl = btn.querySelector(".sos-small"), old = lbl.textContent;
+    btn.style.pointerEvents = "none";
+    lbl.textContent = "📍 Location le rahe hain…";
+    getFixFresh(function (f) {
+      btn.style.pointerEvents = "";
+      lbl.textContent = old;
       try {
-        sessionStorage.setItem(SOSFLAG, JSON.stringify({ start: Date.now() }));
+        sessionStorage.setItem(SOSFLAG, JSON.stringify({ start: Date.now(), noLoc: f ? 0 : 1 }));
       } catch (e) {}
       lastSentAt = Date.now();
       openSms(allPhones(), sosText(f));
@@ -157,17 +207,7 @@
       });
     });
 
-    if (navigator.geolocation && watchId === null) {
-      watchId = navigator.geolocation.watchPosition(
-        function (p) {
-          lastFix = { lat: p.coords.latitude, lng: p.coords.longitude, acc: Math.round(p.coords.accuracy || 0), t: Date.now() };
-          $("liveLoc").textContent = "Lat " + lastFix.lat.toFixed(5) + ", Lng " + lastFix.lng.toFixed(5) + " (±" + lastFix.acc + " m)";
-          $("liveMap").href = mapsLink(lastFix);
-        },
-        function () { $("liveLoc").textContent = "Location update nahi ho rahi — GPS चालू रखो"; },
-        { enableHighAccuracy: true, maximumAge: 5000 }
-      );
-    }
+    startWatch();
     requestWake();
   }
   function stopSosInternals() {
@@ -180,6 +220,11 @@
       if (!f) { $("liveLoc").textContent = "Location nahi mil rahi — थोड़ा रुको और फिर दबाओ"; return; }
       lastSentAt = Date.now();
       $("updateBtn").classList.remove("pulse");
+      $("updateBtn").textContent = "📍 नई location सबको भेजो";
+      try {
+        var d = JSON.parse(sessionStorage.getItem(SOSFLAG) || "null");
+        if (d) { d.noLoc = 0; sessionStorage.setItem(SOSFLAG, JSON.stringify(d)); }
+      } catch (e) {}
       openSms(allPhones(), updateText(f));
     });
   }
@@ -209,7 +254,10 @@
     });
     $("editBtn").addEventListener("click", function () { openSetup(profile); });
     $("sosBtn").addEventListener("click", startSos);
-    $("testBtn").addEventListener("click", function () { openSms(allPhones(), testText()); });
+    $("testBtn").addEventListener("click", function () {
+      if (lastFix && Date.now() - lastFix.t < 60000) openSms(allPhones(), testText(lastFix));
+      else getFix(function (f) { openSms(allPhones(), testText(f)); });
+    });
     $("updateBtn").addEventListener("click", sendUpdate);
     $("safeBtn").addEventListener("click", doSafe);
 
