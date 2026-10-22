@@ -1,0 +1,1 @@
+{"background_color":"#14060a","description":"एक tap में अपने contacts को SOS message और live location भेजो।","display":"standalone","icons":[{"purpose":"any","sizes":"any","src":"icons/icon.svg","type":"image/svg+xml"}],"lang":"hi","name":"Suraksha — SOS Safety","orientation":"portrait","scope":"./","short_name":"Suraksha","start_url":"./index.html","theme_color":"#b3001b"}
